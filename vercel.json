@@ -1,15 +1,8 @@
 {
   "version": 2,
-  "builds": [
-    {
-      "src": "neet-ai-tutor.html",
-      "use": "@vercel/static"
-    }
-  ],
-  "routes": [
-    {
-      "src": "/(.*)",
-      "dest": "neet-ai-tutor.html"
-    }
+  "buildCommand": "bash build-for-vercel.sh",
+  "outputDirectory": ".",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "index.html" }
   ]
 }
