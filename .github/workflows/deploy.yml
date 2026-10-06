@@ -1,0 +1,46 @@
+name: deploy-pages
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Inject the tutor key from the repository secret
+        env:
+          OR_KEY: ${{ secrets.OPENROUTER_KEY }}
+        run: |
+          mkdir -p _site
+          python3 - <<'PY'
+          import os, pathlib
+          key = os.environ.get('OR_KEY', '')
+          src = pathlib.Path('index.html').read_text(encoding='utf-8')
+          if '__OR_KEY__' in src and key:
+              src = src.replace('__OR_KEY__', key)
+              print('tutor key injected at deploy time')
+          else:
+              print('WARNING: OPENROUTER_KEY secret missing - shipping with the tutor off')
+          pathlib.Path('_site/index.html').write_text(src, encoding='utf-8')
+          PY
+          cp sw.js _site/
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+      - uses: actions/deploy-pages@v4
+        id: deployment
