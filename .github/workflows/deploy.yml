@@ -20,22 +20,34 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # The app is published with a placeholder where the tutor key belongs, because this
+      # repository is public. The real key is a repository secret and is injected here, at
+      # build time, so it never lands in git.
       - name: Inject the tutor key from the repository secret
         env:
           OR_KEY: ${{ secrets.OPENROUTER_KEY }}
         run: |
           mkdir -p _site
           python3 - <<'PY'
-          import os, pathlib
-          key = os.environ.get('OR_KEY', '')
+          import os, pathlib, sys
+          key = os.environ.get('OR_KEY', '').strip()
           src = pathlib.Path('index.html').read_text(encoding='utf-8')
-          if '__OR_KEY__' in src and key:
-              src = src.replace('__OR_KEY__', key)
-              print('tutor key injected at deploy time')
-          else:
-              print('WARNING: OPENROUTER_KEY secret missing - shipping with the tutor off')
-          pathlib.Path('_site/index.html').write_text(src, encoding='utf-8')
+          if '__OR_KEY__' not in src:
+              print('::error::index.html has no __OR_KEY__ placeholder - is this the right build?')
+              sys.exit(1)
+          if not key:
+              # Fail loudly. Shipping a keyless build silently is how the tutor ended up
+              # "rejected" on 2026-10-06: the page went live with the placeholder in it.
+              print('::error::Repository secret OPENROUTER_KEY is missing or empty.')
+              print('::error::Set it: repo -> Settings -> Secrets and variables -> Actions -> New repository secret -> name OPENROUTER_KEY, value = the sk-or-v1-... key.')
+              sys.exit(1)
+          if not key.startswith('sk-or-v1-'):
+              print('::error::OPENROUTER_KEY does not look like an OpenRouter key (expected sk-or-v1-...).')
+              sys.exit(1)
+          pathlib.Path('_site/index.html').write_text(src.replace('__OR_KEY__', key), encoding='utf-8')
+          print('tutor key injected: %d characters, placeholder gone' % len(key))
           PY
+          grep -c '__OR_KEY__' _site/index.html && { echo "placeholder survived"; exit 1; } || true
           cp sw.js _site/
 
       - uses: actions/configure-pages@v5
@@ -44,3 +56,6 @@ jobs:
           path: _site
       - uses: actions/deploy-pages@v4
         id: deployment
+
+      - name: Report the live URL
+        run: echo "Live at ${{ steps.deployment.outputs.page_url }}"

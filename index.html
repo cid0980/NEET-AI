@@ -721,9 +721,10 @@ mark{background:var(--warn-soft);color:inherit;padding:0 3px;border-radius:4px}
     </div></div>
     <div class="acc"><div class="hd" data-acc>⚠️ Honest limits <span>▾</span></div><div class="bd hide">
       <b>Lessons:</b> all 50 chapters of the NEET syllabus are written — around 69,500 words, which is about a third of the NCERT word count. Depth, not coverage, is where this is thin.<br>
-      <b>Question bank:</b> 128 built-in. That is a warm-up, not a syllabus — grow it chapter by chapter. Full-length mocks unlock at 180+ questions in a pool.<br>
+      <b>Question bank:</b> 360 built-in — Physics 90, Chemistry 90, Biology 180, plus 114 fully worked examples. Two full NEET-length mocks in a row share no questions. Still a foundation, not a syllabus: grow it chapter by chapter.<br>
       <b>AI explanations can be wrong.</b> Trust NCERT over the app whenever they disagree. Tap 🚩 to report a bad question.<br>
-      <b>Diagrams:</b> 41 are drawn in, across 21 chapters, as their own part of each chapter. NCERT has hundreds, so still read the book alongside — the graphs and plots for Chemistry and Physics are the thinnest.
+      <b>Diagrams:</b> 41 are drawn in, across 21 chapters, as their own part of each chapter. NCERT has hundreds, so still read the book alongside — the graphs and plots for Chemistry and Physics are the thinnest.<br>
+      <b>The tutor's free budget:</b> the built-in key gets about 50 free requests a day and resets at midnight UTC (5:30 am India). Run out and the tutor goes quiet for the rest of the day — nothing else in the app is affected, and no data is lost.
     </div></div>
   </div>
   <div class="center tiny" style="padding:8px 0 20px">Built for one student. Good luck. 🩺</div>
@@ -762,7 +763,9 @@ mark{background:var(--warn-soft);color:inherit;padding:0 3px;border-radius:4px}
 
    Leave it as '' to fall back to the old "paste your own key" behaviour.
    ========================================================================= */
-const BUILT_IN_KEY = '__OR_KEY__'
+// `let`, not `const`: the hosted build swaps the literal for the real key at deploy
+// time, and the error text below has to be able to tell a missing key from a bad one.
+let BUILT_IN_KEY = '__OR_KEY__'
 // NEET (UG) normally runs on the first Sunday of May. NTA moves it? Change it HERE —
 // deliberately not a Settings field: one student, one exam, nothing to mis-set.
 const BUILT_IN_EXAM_DATE = '2028-05-01'
@@ -7981,6 +7984,29 @@ function renderPhaseEditor() {
   };
 }
 
+/* A hosted build gets its key injected at deploy time. If that injection did not run,
+   the literal placeholder is still sitting in the file — and on 2026-10-06 that is exactly
+   what happened, so the app reported "the key was rejected" for a key that was fine.
+   Say the truth instead, and say how to fix it, in the one place a maintainer will look. */
+/* The deploy-time placeholder is built by concatenation on purpose. The Pages workflow
+   replaces EVERY occurrence of the literal in this file with the real key, so if the
+   string appeared here too, the published build would compare the key against itself,
+   decide the key was missing, and turn the tutor off for no reason. Keep the literal in
+   exactly one place: the BUILT_IN_KEY assignment. */
+const KEY_PLACEHOLDER = '__OR_' + 'KEY__';
+function builtInKeyMissing() {
+  return !BUILT_IN_KEY || String(BUILT_IN_KEY).indexOf(KEY_PLACEHOLDER) === 0;
+}
+const KEY_MISSING_NOTE =
+  '<span style="color:var(--warn)">\u26a0\ufe0f This build has no tutor key in it \u2014 the tutor is off. ' +
+  'Everything else (reading, practice, flashcards, diagrams, mock tests) works and saves normally.</span>' +
+  '<div class="tiny" style="margin-top:6px">The key lives in the GitHub repository as an Actions secret ' +
+  '(<b>OPENROUTER_KEY</b>) and is injected while the page is built \u2014 it is never committed, because this ' +
+  'repository is public. If this note is showing, that injection did not run:<br>' +
+  '\u00b7 repo \u2192 Settings \u2192 Secrets and variables \u2192 Actions \u2192 <b>OPENROUTER_KEY</b> \u2192 Update, paste the key, save;<br>' +
+  '\u00b7 then repo \u2192 Actions \u2192 <b>deploy-pages</b> \u2192 latest run \u2192 <b>Re-run all jobs</b>. About a minute later this note goes away.<br>' +
+  'Or paste any key in the box above for this device only.</div>';
+
 /* The tutor needs no setup when a key is built in: hide the key field entirely. */
 function renderTutorCard() {
   // Lives inside the collapsed "The tutor's key" row in Settings -> How this works.
@@ -7991,8 +8017,8 @@ function renderTutorCard() {
     const using = App.settings.apiKey;
     $('#keyState').innerHTML = using
       ? '<span style="color:var(--ok)">\u2713 using the key saved on this device</span>'
-      : (BUILT_IN_KEY ? '<span style="color:var(--ok)">\u2713 the built-in key is in force \u2014 the tutor works</span>'
-         : '<span style="color:var(--warn)">No key set \u2014 the tutor is off. Everything else works.</span>');
+      : (builtInKeyMissing() ? KEY_MISSING_NOTE
+         : '<span style="color:var(--ok)">\u2713 the built-in key is in force \u2014 the tutor works</span>');
   }
   if ($('#aiTest')) $('#aiTest').onclick = async () => {
     const out = $('#aiTestOut');
@@ -8199,14 +8225,22 @@ const GEN_SYSTEM = `You write NEET-UG style multiple-choice questions. You outpu
 
 // Free models come and go: one we shipped with was retired, which left the tutor
 // dead even with a valid key. So try a list and use the first that answers.
-// Picked by actually calling each free model and keeping the ones that answered.
-// Dropped for being chronically rate-limited or overloaded upstream: google/gemma-4-*:free
-// (429), nvidia/nemotron-3-ultra:free (503), poolside/*:free (429), apodex/*:free (error).
+// Order = fastest clean answer first. Every slug below was called live with a real
+// teaching prompt on 2026-10-06; the ones that failed are listed under DROPPED.
+// DROPPED, with the reason, so nobody re-adds a slug that is known to be broken:
+//   nvidia/nemotron-3.5-lightning:free  -> puts its whole thinking trace in `content`
+//   apodex/apodex-1.1-mini:free         -> answers only in `reasoning`; `content` empty
+//   google/gemma-4-26b-a4b-it:free      -> 429 on the provider side, repeatedly
+//   nvidia/nemotron-3-ultra-550b-a55b:free -> 503, chronically overloaded
+//   poolside/laguna-*:free              -> 429
+//   nvidia/nemotron-3-nano-omni-...:free -> ResourceExhausted; kept LAST as a spare
+//   nvidia/nemotron-3.5-content-safety:free -> it is a safety filter, not a tutor
 const FREE_MODEL_CHAIN = [
-  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free',
-  'inclusionai/ling-3.0-flash-sante:free',
-  'nvidia/nemotron-3-super-120b-a12b:free',
-  'liquid/lfm-2.5-2.6b:free'
+  'liquid/lfm-2.5-2.6b:free',                          // 5.5 s, clean answer
+  'inclusionai/ling-3.0-flash-sante:free',             // 6.6 s, clean, concise
+  'cohere/north-mini-code:free',                       // ~20 s, verbose but accurate
+  'nvidia/nemotron-3-super-120b-a12b:free',            // 10.9 s, clean answer
+  'nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free' // often 503; last resort
 ];
 function aiModelList() {
   if (App.settings.provider !== 'openrouter') return [App.settings.gemModel || 'gemini-2.5-flash'];
@@ -8242,19 +8276,40 @@ async function callAI(messages, system) {
             messages: [{ role: 'system', content: system }].concat(
               messages.map(m => ({ role: m.role, content: m.text }))),
             temperature: 0.55,
-            max_tokens: 1400
+            // Reasoning models spend this budget thinking before they answer. At 1400
+            // two of them came back with the thinking and no answer at all.
+            max_tokens: 3000
           })
         });
-        if (!r.ok) { lastErr = new Error('HTTP ' + r.status + ' — ' + (await safeErr(r))); continue; }
+        if (!r.ok) {
+          const e = new Error('HTTP ' + r.status + ' — ' + (await safeErr(r)));
+          e.status = r.status; e.model = model;
+          // 401/403 is about the key, not the model: no point burning the rest of the chain.
+          if (r.status === 401 || r.status === 403) throw e;
+          lastErr = e; AI_STATE.allBusy = true; continue;
+        }
         const j = await r.json();
+        // OpenRouter can answer 200 and still put an upstream failure in the body
+        // (a free worker that is full, a provider that is down). That is a model
+        // problem, not a key problem — go to the next model.
+        if (j.error) {
+          const e = new Error('HTTP 200 body error — ' + (j.error.message || 'provider error') + ' (' + model + ')');
+          e.status = 503; e.model = model; lastErr = e; AI_STATE.allBusy = true; continue;
+        }
         const t = j.choices && j.choices[0] && j.choices[0].message && j.choices[0].message.content;
-        if (!t) { lastErr = new Error('empty response from ' + model); continue; }
+        if (!t) {
+          const e = new Error('empty response from ' + model + ' (it answered in its reasoning field only)');
+          e.status = 503; e.model = model; lastErr = e; AI_STATE.allBusy = true; continue;
+        }
         App.settings.lastGoodModel = model;
+        AI_STATE.lastGood = model; AI_STATE.lastError = null; AI_STATE.allBusy = false;
         return t.trim();
       } catch (e) {
+        if (e && (e.status === 401 || e.status === 403)) { AI_STATE.lastError = e; throw e; }
         lastErr = e;   // try the next model in the chain
       }
     }
+    AI_STATE.lastError = lastErr;
     throw lastErr || new Error('no model responded');
   }
 
@@ -8269,7 +8324,7 @@ async function callAI(messages, system) {
       generationConfig: { temperature: 0.55, maxOutputTokens: 1600 }
     })
   });
-  if (!r.ok) throw new Error('HTTP ' + r.status + ' — ' + (await safeErr(r)));
+  if (!r.ok) { const e = new Error('HTTP ' + r.status + ' — ' + (await safeErr(r))); e.status = r.status; AI_STATE.lastError = e; throw e; }
   const j = await r.json();
   const c = j.candidates && j.candidates[0];
   const t = c && c.content && c.content.parts && c.content.parts.map(p => p.text || '').join('');
@@ -8281,6 +8336,47 @@ async function callAI(messages, system) {
 }
 async function safeErr(r) {
   try { const t = await r.text(); return t.slice(0, 200); } catch (e) { return ''; }
+}
+
+/* What the tutor is doing right now. Read by the error text below, so the app can
+   say *why* it failed instead of blaming the key for everything. */
+const AI_STATE = { lastGood: null, lastError: null, dailyBudgetHit: false, allBusy: false };
+
+function aiErrorMessage(e) {
+  const m = String((e && e.message) || e || '');
+  const st = e && e.status;
+  const allBusy = AI_STATE.allBusy;
+
+  // 1. A free provider that is simply full. Its own wording sounds like a quota
+  //    ("Worker local total request limit reached"), and on 2026-10-06 that exact
+  //    string made the app tell the maintainer his key had been rejected. It had not.
+  //    So capacity is classified first, and never sets the daily-budget flag.
+  if (/upstream error|ResourceExhausted|provider_unavailable|worker local|no available upstream|\b50[23]\b|overloaded/i.test(m) && st !== 429) {
+    return allBusy
+      ? 'Every free model is busy right now — normal on free tiers, and it clears in a minute or two. Try again. (Reading, practice, flashcards and tests never need the tutor.)'
+      : 'That free model is full right now — the app moves to the next one automatically. If this keeps showing up, wait a minute and try again.';
+  }
+
+  // 2. Out of free requests for the day. The most common real failure, and it is
+  //    NOT a broken key — saying so sent the maintainer hunting for a key that was fine.
+  if (AI_STATE.dailyBudgetHit || st === 429 || st === 402 ||
+      /free[- ]model.{0,40}limit|daily.{0,20}(request|limit)|rate limit exceeded|no credits|insufficient credits|exceeded your current credits|payment required/i.test(m)) {
+    AI_STATE.dailyBudgetHit = true;
+    return "Today's free tutor budget is used up. The key is fine — free models allow about 50 requests a day, and it resets at midnight UTC (5:30 am India). Reading, practice, flashcards, diagrams and mock tests all keep working; only the tutor is quiet until then.";
+  }
+  // 3. The key itself is wrong, missing, or never made it into this build.
+  if (st === 401 || st === 403) {
+    if (builtInKeyMissing() && !App.settings.apiKey)
+      return 'This copy of the app was published without a tutor key, so the tutor is off. Everything else works. Whoever looks after the app sets the key — see the note in Settings → How this works.';
+    return 'The key was rejected (401/403). Whoever looks after the app can replace it under Settings → How this works → The tutor\'s key.';
+  }
+  if (/no API key set/.test(m)) return 'No tutor key is set in this copy of the app. Everything else works — reading, practice, flashcards and tests do not need one.';
+  if (st === 404) return 'That model is retired — the app tries the next one automatically. If every model fails, whoever looks after the app can check the key under Settings → How this works.';
+  // 4. Anything else that left the whole chain silent. Temporary, and not her fault.
+  if (st === 503 || st === 502 || /all .* models|no model responded|body error|empty response|overloaded|ResourceExhausted|provider_unavailable|upstream error|\b50[23]\b/i.test(m))
+    return 'Every free model is busy right now — this is normal on free tiers and clears in a minute or two. Try again. (Reading, practice, flashcards and tests never need the tutor.)';
+  if (/Failed to fetch/i.test(m)) return 'Could not reach the API. Check the internet connection (this also happens inside the in-app preview, which has no network access — open the file directly in a browser).';
+  return 'Something went wrong: ' + m;
 }
 
 /* ---------------- chat state ---------------- */
@@ -8370,15 +8466,6 @@ ${text.slice(0, 1500)}
       `<div class="msg a" style="border-color:var(--bad)">⚠️ ${esc(aiErrorMessage(e))}</div>`);
     scrollChat();
   }
-}
-
-function aiErrorMessage(e) {
-  const m = String(e.message || e);
-  if (m.includes('401') || m.includes('403')) return 'The key was rejected. Whoever looks after the app can replace it under Settings → How this works.';
-  if (m.includes('429')) return 'Rate limit hit. Wait a minute — free tiers have per-minute caps.';
-  if (m.includes('404')) return 'That model is retired — the app tries the next one automatically. If every model fails, whoever looks after the app can check the key under Settings → How this works.';
-  if (m.includes('Failed to fetch')) return 'Could not reach the API. Check the internet connection (this also happens inside the in-app preview, which has no network access — open the file directly in a browser).';
-  return 'Something went wrong: ' + m;
 }
 
 /* She tapped "ask about this" while reading. The tutor gets the chapter, the part and the
@@ -8686,9 +8773,20 @@ else init();
 /* Expose internals for debugging from the browser console (and for tests).
    Everything here is read-mostly; the UI is the intended way to change data. */
 window.App = App;
-window.BUILT_IN_KEY = BUILT_IN_KEY;   // the key the app ships with — she never types it
+// The key the app ships with — she never types it. Exposed through a getter/setter so
+// the one place that reads it live (aiErrorMessage) can be tested against a keyless build.
+Object.defineProperty(window, 'BUILT_IN_KEY', {
+  configurable: true,
+  get: () => BUILT_IN_KEY,
+  set: v => { BUILT_IN_KEY = v; }
+});
 window.aiKey = aiKey;                 // one place decides which key is in force
 window.FREE_MODEL_CHAIN = FREE_MODEL_CHAIN;
+window.aiErrorMessage = aiErrorMessage;
+window.builtInKeyMissing = builtInKeyMissing;
+window.KEY_MISSING_NOTE = KEY_MISSING_NOTE;
+window.AI_STATE = AI_STATE;
+window.safeErr = safeErr;
 window.sendToTutor = sendToTutor;
 window.scrollChat = scrollChat;
 window.giveHint = giveHint;
